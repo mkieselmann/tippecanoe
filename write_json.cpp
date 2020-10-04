@@ -251,6 +251,64 @@ void layer_to_geojson(mvt_layer const &layer, unsigned z, unsigned x, unsigned y
 	for (size_t f = 0; f < layer.features.size(); f++) {
 		mvt_feature const &feat = layer.features[f];
 
+        std::vector<lonlat> ops;
+
+        for (size_t g = 0; g < feat.geometry.size(); g++) {
+            int op = feat.geometry[g].op;
+            long long px = feat.geometry[g].x;
+            long long py = feat.geometry[g].y;
+
+            if (op == VT_MOVETO || op == VT_LINETO) {
+                long long scale = 1LL << (32 - z);
+                long long wx = scale * x + (scale / layer.extent) * px;
+                long long wy = scale * y + (scale / layer.extent) * py;
+
+                double lat, lon;
+                projection->unproject(wx, wy, 32, &lon, &lat);
+
+                ops.push_back(lonlat(op, lon, lat, px, py));
+            } else {
+                ops.push_back(lonlat(op, 0, 0, 0, 0));
+            }
+        }
+
+        // skip invalid polygons that are malformed due to scaling to tile resolution
+        if (feat.type == VT_POLYGON) {
+            std::vector<std::vector<lonlat> > rings;
+
+            for (size_t i = 0; i < ops.size(); i++) {
+                if (ops[i].op == VT_MOVETO) {
+                    rings.push_back(std::vector<lonlat>());
+                }
+
+                int n = rings.size() - 1;
+                if (n >= 0) {
+                    if (ops[i].op == VT_CLOSEPATH) {
+                        rings[n].push_back(rings[n][0]);
+                    } else {
+                        rings[n].push_back(ops[i]);
+                    }
+                }
+            }
+
+            if (rings.size() > 0) {
+                size_t i = 0;
+                long double area = 0;
+                for (size_t k = 0; k < rings[i].size(); k++) {
+                    if (rings[i][k].op != VT_CLOSEPATH) {
+                        area += (long double) rings[i][k].x * (long double) rings[i][(k + 1) % rings[i].size()].y;
+                        area -= (long double) rings[i][k].y * (long double) rings[i][(k + 1) % rings[i].size()].x;
+                    }
+                }
+                area /= 2;
+
+                if (area < 0) {
+//                    fprintf(stderr, "Polygon begins with an inner ring. Skipping\n");
+                    continue;
+                }
+            }
+        }
+
 		state.json_write_hash();
 		state.json_write_string("type");
 		state.json_write_string("Feature");
@@ -350,27 +408,6 @@ void layer_to_geojson(mvt_layer const &layer, unsigned z, unsigned x, unsigned y
 
 		state.json_write_string("geometry");
 		state.json_write_hash();
-
-		std::vector<lonlat> ops;
-
-		for (size_t g = 0; g < feat.geometry.size(); g++) {
-			int op = feat.geometry[g].op;
-			long long px = feat.geometry[g].x;
-			long long py = feat.geometry[g].y;
-
-			if (op == VT_MOVETO || op == VT_LINETO) {
-				long long scale = 1LL << (32 - z);
-				long long wx = scale * x + (scale / layer.extent) * px;
-				long long wy = scale * y + (scale / layer.extent) * py;
-
-				double lat, lon;
-				projection->unproject(wx, wy, 32, &lon, &lat);
-
-				ops.push_back(lonlat(op, lon, lat, px, py));
-			} else {
-				ops.push_back(lonlat(op, 0, 0, 0, 0));
-			}
-		}
 
 		if (feat.type == VT_POINT) {
 			if (ops.size() == 1) {
